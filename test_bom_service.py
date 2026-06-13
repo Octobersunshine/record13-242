@@ -1,6 +1,6 @@
 import unittest
 
-from bom_service import BOMService, BOMItem, build_sample_bom
+from bom_service import BOMCircularReferenceError, BOMService, BOMItem, build_sample_bom
 
 
 class TestBOMService(unittest.TestCase):
@@ -68,16 +68,37 @@ class TestBOMService(unittest.TestCase):
         self.assertAlmostEqual(flat_dict["前叉"], 1.0)
         self.assertAlmostEqual(flat_dict["轮毂"], 2.0)
 
-    def test_circular_reference_no_infinite_loop(self):
+    def test_circular_reference_ab_a_raises(self):
+        svc = BOMService()
+        svc.load_relations([
+            ("A", "B", 1),
+            ("B", "A", 1),
+        ])
+        with self.assertRaises(BOMCircularReferenceError) as ctx:
+            svc.explode("A")
+        self.assertEqual(ctx.exception.path, ["A", "B", "A"])
+        self.assertIn("A → B → A", str(ctx.exception))
+
+    def test_circular_reference_abc_a_raises(self):
         svc = BOMService()
         svc.load_relations([
             ("A", "B", 1),
             ("B", "C", 1),
             ("C", "A", 1),
         ])
-        items = svc.explode("A")
-        materials = [i.material for i in items]
-        self.assertEqual(materials, ["B", "C"])
+        with self.assertRaises(BOMCircularReferenceError) as ctx:
+            svc.explode("A")
+        self.assertEqual(ctx.exception.path, ["A", "B", "C", "A"])
+
+    def test_circular_reference_error_is_custom_exception(self):
+        svc = BOMService()
+        svc.load_relations([("A", "B", 1), ("B", "A", 1)])
+        try:
+            svc.explode("A")
+            self.fail("预期抛出 BOMCircularReferenceError")
+        except BOMCircularReferenceError as e:
+            self.assertTrue(hasattr(e, "path"))
+            self.assertIsInstance(e.path, list)
 
     def test_multiple_paths_to_same_leaf(self):
         svc = BOMService()

@@ -5,6 +5,13 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
 
+class BOMCircularReferenceError(Exception):
+    def __init__(self, path: List[str]) -> None:
+        self.path = path
+        cycle = " → ".join(path + [path[0]])
+        super().__init__(f"BOM 检测到循环引用: {cycle}")
+
+
 @dataclass
 class BOMItem:
     material: str
@@ -33,8 +40,9 @@ class BOMService:
 
     def explode(self, parent: str) -> List[BOMItem]:
         visited: set = set()
+        path: List[str] = []
         result: List[BOMItem] = []
-        self._explode_recursive(parent, 1.0, 0, visited, result)
+        self._explode_recursive(parent, 1.0, 0, visited, path, result)
         return result
 
     def _explode_recursive(
@@ -43,22 +51,25 @@ class BOMService:
         parent_qty: float,
         level: int,
         visited: set,
+        path: List[str],
         result: List[BOMItem],
     ) -> None:
         if material in visited:
             return
         visited.add(material)
+        path.append(material)
 
         children = self._bom.get(material, [])
         for node in children:
             if node.material in visited:
-                continue
+                raise BOMCircularReferenceError(path + [node.material])
             total_qty = parent_qty * node.qty_per_parent
             result.append(
                 BOMItem(material=node.material, quantity=total_qty, level=level + 1)
             )
-            self._explode_recursive(node.material, total_qty, level + 1, visited, result)
+            self._explode_recursive(node.material, total_qty, level + 1, visited, path, result)
 
+        path.pop()
         visited.discard(material)
 
     def flatten(self, parent: str) -> List[Tuple[str, float]]:
@@ -105,25 +116,29 @@ def main() -> None:
     else:
         svc = build_sample_bom()
 
-    if args.format == "json":
-        items = svc.explode(args.parent)
-        output = [
-            {"material": i.material, "quantity": i.quantity, "level": i.level}
-            for i in items
-        ]
-        print(json.dumps(output, ensure_ascii=False, indent=2))
-    elif args.format == "tree":
-        items = svc.explode(args.parent)
-        print(f"{args.parent}")
-        for item in items:
-            indent = "  " * item.level
-            print(f"{indent}├─ {item.material} × {item.quantity:g}")
-    else:
-        flat = svc.flatten(args.parent)
-        print(f"{'物料':<12}{'用量':>10}")
-        print("-" * 22)
-        for mat, qty in flat:
-            print(f"{mat:<12}{qty:>10g}")
+    try:
+        if args.format == "json":
+            items = svc.explode(args.parent)
+            output = [
+                {"material": i.material, "quantity": i.quantity, "level": i.level}
+                for i in items
+            ]
+            print(json.dumps(output, ensure_ascii=False, indent=2))
+        elif args.format == "tree":
+            items = svc.explode(args.parent)
+            print(f"{args.parent}")
+            for item in items:
+                indent = "  " * item.level
+                print(f"{indent}├─ {item.material} × {item.quantity:g}")
+        else:
+            flat = svc.flatten(args.parent)
+            print(f"{'物料':<12}{'用量':>10}")
+            print("-" * 22)
+            for mat, qty in flat:
+                print(f"{mat:<12}{qty:>10g}")
+    except BOMCircularReferenceError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
