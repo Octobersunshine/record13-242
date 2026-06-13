@@ -79,6 +79,59 @@ class BOMService:
             aggregated[item.material] += item.quantity
         return sorted(aggregated.items())
 
+    def get_low_level_codes(self, parent: str) -> Dict[str, int]:
+        llc: Dict[str, int] = {parent: 0}
+        visited: set = set()
+        path: List[str] = []
+        self._llc_recursive(parent, 0, visited, path, llc)
+        return llc
+
+    def _llc_recursive(
+        self,
+        material: str,
+        current_level: int,
+        visited: set,
+        path: List[str],
+        llc: Dict[str, int],
+    ) -> None:
+        if material in visited:
+            return
+        visited.add(material)
+        path.append(material)
+
+        children = self._bom.get(material, [])
+        for node in children:
+            if node.material in visited:
+                raise BOMCircularReferenceError(path + [node.material])
+            child_level = current_level + 1
+            if node.material not in llc or child_level > llc[node.material]:
+                llc[node.material] = child_level
+            self._llc_recursive(node.material, child_level, visited, path, llc)
+
+        path.pop()
+        visited.discard(material)
+
+    def compute_global_low_level_codes(self) -> Dict[str, int]:
+        all_materials: set = set()
+        for parent, children in self._bom.items():
+            all_materials.add(parent)
+            for child in children:
+                all_materials.add(child.material)
+
+        child_materials: set = set()
+        for children in self._bom.values():
+            for child in children:
+                child_materials.add(child.material)
+        roots = all_materials - child_materials
+
+        global_llc: Dict[str, int] = {}
+        for root in sorted(roots):
+            root_llc = self.get_low_level_codes(root)
+            for mat, code in root_llc.items():
+                if mat not in global_llc or code > global_llc[mat]:
+                    global_llc[mat] = code
+        return global_llc
+
 
 def build_sample_bom() -> BOMService:
     svc = BOMService()
@@ -104,7 +157,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="BOM 展开服务")
     parser.add_argument("parent", help="父物料编码")
     parser.add_argument("--relations", help="BOM 关系 JSON 文件路径")
-    parser.add_argument("--format", choices=["tree", "flat", "json"], default="flat", help="输出格式")
+    parser.add_argument("--format", choices=["tree", "flat", "json", "llc", "llc-global"], default="flat", help="输出格式")
     args = parser.parse_args()
 
     svc = BOMService()
@@ -119,23 +172,38 @@ def main() -> None:
     try:
         if args.format == "json":
             items = svc.explode(args.parent)
+            llc = svc.get_low_level_codes(args.parent)
             output = [
-                {"material": i.material, "quantity": i.quantity, "level": i.level}
+                {"material": i.material, "quantity": i.quantity, "level": i.level, "low_level_code": llc[i.material]}
                 for i in items
             ]
             print(json.dumps(output, ensure_ascii=False, indent=2))
         elif args.format == "tree":
             items = svc.explode(args.parent)
-            print(f"{args.parent}")
+            llc = svc.get_low_level_codes(args.parent)
+            print(f"{args.parent} (LLC={llc[args.parent]})")
             for item in items:
                 indent = "  " * item.level
-                print(f"{indent}├─ {item.material} × {item.quantity:g}")
+                print(f"{indent}├─ {item.material} × {item.quantity:g} (LLC={llc[item.material]})")
+        elif args.format == "llc":
+            llc = svc.get_low_level_codes(args.parent)
+            print(f"{'物料':<12}{'低层码':>8}")
+            print("-" * 20)
+            for mat, code in sorted(llc.items(), key=lambda x: (x[1], x[0])):
+                print(f"{mat:<12}{code:>8}")
+        elif args.format == "llc-global":
+            llc = svc.compute_global_low_level_codes()
+            print(f"{'物料':<12}{'低层码':>8}")
+            print("-" * 20)
+            for mat, code in sorted(llc.items(), key=lambda x: (x[1], x[0])):
+                print(f"{mat:<12}{code:>8}")
         else:
             flat = svc.flatten(args.parent)
-            print(f"{'物料':<12}{'用量':>10}")
-            print("-" * 22)
+            llc = svc.get_low_level_codes(args.parent)
+            print(f"{'物料':<12}{'用量':>10}{'低层码':>8}")
+            print("-" * 30)
             for mat, qty in flat:
-                print(f"{mat:<12}{qty:>10g}")
+                print(f"{mat:<12}{qty:>10g}{llc[mat]:>8}")
     except BOMCircularReferenceError as e:
         print(f"错误: {e}", file=sys.stderr)
         sys.exit(1)
